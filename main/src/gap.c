@@ -188,6 +188,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                     rc);
                 return rc;
             }
+            ble_gap_security_initiate(event->subscribe.conn_handle);
         }
         /* Connection failed, restart advertising */
         else {
@@ -252,13 +253,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                  event->subscribe.reason, event->subscribe.prev_notify,
                  event->subscribe.cur_notify, event->subscribe.prev_indicate,
                  event->subscribe.cur_indicate);
-
         /* GATT subscribe event callback */
         rc = gatt_svr_subscribe_cb(event);
-        if (rc == BLE_ATT_ERR_INSUFFICIENT_AUTHEN) {
-            /* Request connection encryption */
-            return ble_gap_security_initiate(event->subscribe.conn_handle);
-        }
         return rc;
 
     /* MTU update event */
