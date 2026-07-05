@@ -9,6 +9,10 @@
 #include "gatt_svc.h"
 #include "heart_rate.h"
 #include "led.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
+#include "sdkconfig.h"
+
 
 /* Library function declarations */
 void ble_store_config_init(void);
@@ -51,7 +55,7 @@ static void nimble_host_config_init(void) {
     BLE_HS_IO_NO_INPUT_OUTPUT   入出力なし          センサー等の画面・ボタンなし機器
     BLE_HS_IO_KEYBOARD_DISPLAY  表示 + 数字入力     最も高機能なUIあり
     */
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_KEYBOARD_ONLY;
 
     /*
     ボンディングする(1)か、しない(0)か
@@ -103,7 +107,7 @@ static void heart_rate_task(void *param) {
     while (1) {
         /* Update heart rate value every 1 second */
         update_heart_rate();
-        ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
+        //ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
 
         /* Send heart rate indication if enabled */
         send_heart_rate_indication();
@@ -117,6 +121,16 @@ static void heart_rate_task(void *param) {
 }
 
 void app_main(void) {
+    #if CONFIG_ESP_CONSOLE_UART
+        const int uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
+
+        /*
+        * すでに console / example 側で UART driver を install しているなら、
+        * 二重 install しない。
+        */
+        uart_driver_install(uart_num, 256, 0, 0, NULL, 0);
+        uart_vfs_dev_use_driver(uart_num);
+    #endif
     /* Local variables */
     int rc = 0;
     uint32_t seed = esp_random();
@@ -173,5 +187,11 @@ void app_main(void) {
     /* Start NimBLE host task thread and return */
     xTaskCreate(nimble_host_task, "NimBLE Host", 4*1024, NULL, 5, NULL);
     xTaskCreate(heart_rate_task, "Heart Rate", 4*1024, NULL, 5, NULL);
+    xTaskCreate(passkey_monitor_task,
+                "passkey_monitor",
+                4096,
+                NULL,
+                5,
+                NULL);
     return;
 }

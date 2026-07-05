@@ -7,6 +7,7 @@
 #include "gap.h"
 #include "common.h"
 #include "gatt_svc.h"
+#include "esp_console.h"
 
 /* Private function declarations */
 inline static void format_addr(char *addr_str, uint8_t addr[]);
@@ -145,6 +146,87 @@ static void start_advertising(void) {
  * gap_event_handler is a callback function registered when calling
  * ble_gap_adv_start API and called when a GAP event arrives
  */
+
+#include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "host/ble_sm.h"
+#include "host/ble_gap.h"
+#include "esp_log.h"
+
+static volatile bool s_passkey_pending = false;
+static uint16_t s_passkey_conn_handle;
+
+static bool parse_passkey_6digits(const char *line, uint32_t *out){
+    char digits[7] = {0};
+    int n = 0;
+
+    for(int i = 0; line[i] != '\0'; i++){
+        if(line[i] == '\r' || line[i]=='\n'){
+            break;
+        }
+
+        if(!isdigit((unsigned char)line[i])){
+            return false;
+        }
+
+        if(n>=6){
+            return false;
+        }
+
+        digits[n++] = line[i];
+    }
+
+    if(n !=6){
+        return false;
+    }
+
+    //strtoul 文字列をunsigned longに変換
+    *out = (uint32_t)strtoul(digits, NULL, 10);
+    return true;
+}
+
+void passkey_monitor_task(void *arg){
+    char line[32];
+
+    while(1){
+        if(!s_passkey_pending){
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+
+        if(fgets(line, sizeof(line), stdin)==NULL){
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        uint32_t passkey=0;
+        if(!parse_passkey_6digits(line, &passkey)){
+            printf("Invalid passkey. Enter exactly 6 digits:\n> ");
+            fflush(stdout);
+            continue;
+        }
+
+        struct ble_sm_io pkey = {0};
+        pkey.action = BLE_SM_IOACT_INPUT;
+        pkey.passkey = passkey;
+
+        uint16_t conn_handle = s_passkey_conn_handle;
+        s_passkey_pending = false;
+
+        int rc = ble_sm_inject_io(conn_handle,&pkey);
+        if(rc!=0){
+            ESP_LOGE(TAG, "ble_sm_inject_io failed: %d", rc);
+        } else {
+            ESP_LOGI(TAG, "passkey injected");
+        }
+    }
+}
+
 static int gap_event_handler(struct ble_gap_event *event, void *arg) {
     /* Local variables */
     int rc = 0;
@@ -188,7 +270,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
                     rc);
                 return rc;
             }
-            ble_gap_security_initiate(event->subscribe.conn_handle);
+            ble_gap_security_initiate(event->connect.conn_handle);
         }
         /* Connection failed, restart advertising */
         else {
@@ -295,21 +377,38 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
 
     /* Passkey action event */
     case BLE_GAP_EVENT_PASSKEY_ACTION:
+        struct ble_sm_io pkey = {0};
         /* Display action */
-        if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
-            /* Generate passkey */
-            struct ble_sm_io pkey = {0};
-            pkey.action = event->passkey.params.action;
-            pkey.passkey = 100000 + esp_random() % 900000;
-            ESP_LOGI(TAG, "enter passkey %" PRIu32 " on the peer side",
-                     pkey.passkey);
-            rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
-            if (rc != 0) {
-                ESP_LOGE(TAG,
-                         "failed to inject security manager io, error code: %d",
-                         rc);
-                return rc;
-            }
+        /*
+        BLE_SM_IOACT_NONE   何もしない。Just Works 相当
+        BLE_SM_IOACT_OOB    Legacy Pairing の OOB データ使用
+        BLE_SM_IOACT_INPUT  パスキー入力
+        BLE_SM_IOACT_DISP   パスキー表示
+        BLE_SM_IOACT_NUMCMP Numeric Comparison。表示された数値を承認/拒否
+        BLE_SM_IOACT_OOB_SC Secure Connections 用 OOB
+        BLE_SM_IOACT_MAX_PLUS_ONE   境界値。通常の action として使うものではない
+        */
+        switch(event->passkey.params.action){
+            case BLE_SM_IOACT_DISP:
+                /* Generate passkey */
+                pkey.action = event->passkey.params.action;
+                pkey.passkey = 100000 + esp_random() % 900000;
+                ESP_LOGI(TAG, "enter passkey %" PRIu32 " on the peer side",
+                        pkey.passkey);
+                rc = ble_sm_inject_io(event->passkey.conn_handle, &pkey);
+                if (rc != 0) {
+                    ESP_LOGE(TAG,
+                            "failed to inject security manager io, error code: %d",
+                            rc);
+                    return rc;
+                }
+                break;
+
+            case BLE_SM_IOACT_INPUT:
+            s_passkey_conn_handle = event->passkey.conn_handle;
+            s_passkey_pending = true;
+            printf("\nBLE passkey required. Enter 6 digits in idf.py monitor and press Enter:\n> ");
+            fflush(stdout);
         }
         return rc;
     }

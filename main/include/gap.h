@@ -20,5 +20,6 @@
 void adv_init(void);
 bool is_connection_encrypted(uint16_t conn_handle);
 int gap_init(void);
+void passkey_monitor_task(void *arg);
 
 #endif // GAP_SVC_H
